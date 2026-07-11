@@ -985,12 +985,23 @@ class Agent:
         self.brain.system = self._build_system_prompt()
 
     def _build_system_prompt(self):
-        parts = [self.memory.content] if self.memory else []
+        parts = []
+        # Optional external prompt template (sibling of nicode.py).
+        # Loaded only if present, so absence is a no-op.
+        prompt_path = os.path.join(os.path.dirname(__file__), "SYSTEM_PROMPT.md")
+        if os.path.isfile(prompt_path):
+            try:
+                with open(prompt_path, encoding="utf-8") as f:
+                    parts.append(f.read().rstrip())
+            except OSError:
+                pass
+        if self.memory is not None:
+            parts.append(self.memory.content)
         if self.mode == "plan":
             parts.append(
                 "You are in PLAN mode. You cannot write code files. Use write_plan to save your plans."
             )
-        return "\n".join(parts)
+        return "\n\n".join(parts)
 
     def _tools_for_mode(self):
         if self.mode == "act":
