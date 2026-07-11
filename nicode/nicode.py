@@ -659,6 +659,7 @@ class WriteFile:
 
     name = "write_file"
     plan_safe = False
+    requires_permission = True
     description = "Writes content to a file."
     input_schema = {
         "type": "object",
@@ -717,6 +718,7 @@ class EditFile:
 
     name = "edit_file"
     plan_safe = False
+    requires_permission = True
     description = "Replaces specific text in a file. Use for surgical edits instead of rewriting entire files."
     input_schema = {
         "type": "object",
@@ -855,6 +857,7 @@ class RunCommand:
 
     name = "run_command"
     plan_safe = False
+    requires_permission = True
     description = "Executes a terminal command. Use this to run scripts, tests, or install packages."
     input_schema = {
         "type": "object",
@@ -970,11 +973,12 @@ tools = [
 class Agent:
     """A coding agent with tools, memory, and enhanced UX."""
 
-    def __init__(self, brain, tools, memory=None, mode="plan"):
+    def __init__(self, brain, tools, memory=None, mode="plan", ask_permission=True):
         self.brain = brain
         self.tools = list(tools)
         self.memory = memory
         self.mode = mode
+        self.ask_permission = ask_permission
         self.conversation = []
         self.cmd_history = []  # Session-only command history
         self.brain.tools = self._tools_for_mode()
@@ -1063,27 +1067,32 @@ class Agent:
             if self.mode == "plan"
             else f"{YELLOW}ACT (write enabled){RESET}"
         )
-        help_text = f"""
-{BOLD}Available Commands:{RESET}
-  /q, /quit           Quit nicode
-  /c, /clear          Clear conversation
-  /h, /history        Show command history (session)
-  /mode [plan|act]    Switch between read-only and write mode
-  /brain [azure|nvidia] Switch LLM backend
-  /export [file]      Export conversation to markdown
-  /help               Show this help
-
-{BOLD}Input (history & completion):{RESET}
-  ↑/↓                 Previous/next command
-  Ctrl+W              Delete word (default)
-  Tab                 Complete file paths
-
-{BOLD}Current Mode:{RESET} {mode_display}
-
-{BOLD}Tips:{RESET}
-  • In PLAN mode, use /mode act to enable writing
-  • /export exports conversation as markdown
-"""
+        permission_status = f"{GREEN}enabled{RESET}" if self.ask_permission else f"{YELLOW}disabled{RESET}"
+        help_text = (
+            f"{BOLD}Available Commands:{RESET}\n"
+            f"  /q, /quit           Quit nicode\n"
+            f"  /c, /clear          Clear conversation\n"
+            f"  /h, /history        Show command history (session)\n"
+            f"  /mode [plan|act]    Switch between read-only and write mode\n"
+            f"  /brain [azure|nvidia] Switch LLM backend\n"
+            f"  /export [file]      Export conversation as markdown\n"
+            f"  /help               Show this help\n"
+            f"\n"
+            f"{BOLD}Input (history & completion):{RESET}\n"
+            f"  ↑/↓                 Previous/next command\n"
+            f"  Ctrl+W              Delete word (default)\n"
+            f"  Tab                 Complete file paths\n"
+            f"\n"
+            f"{BOLD}Current Mode:{RESET} {mode_display}\n"
+            f"\n"
+            f"{BOLD}Safety:{RESET}\n"
+            f"  • Permission prompts: {permission_status}\n"
+            f"  • Dangerous commands (e.g., rm -rf) are flagged\n"
+            f"\n"
+            f"{BOLD}Tips:{RESET}\n"
+            f"  • In PLAN mode, use /mode act to enable writing\n"
+            f"  • /export exports conversation as markdown\n"
+        )
         return render_markdown(help_text)
 
     def _export_conversation(self, user_input):
@@ -1251,6 +1260,34 @@ class Agent:
         if tool is None:
             return f"Error: Tool '{name}' not found"
 
+        # Ask for permission if the tool requires it and ask_permission is enabled
+        if self.ask_permission and getattr(tool, "requires_permission", False):
+            # Format arguments for display, truncating large values
+            if isinstance(args, dict):
+                arg_parts = []
+                for k, v in args.items():
+                    if isinstance(v, str) and len(v) > 100:
+                        v_display = v[:97] + "..."
+                    else:
+                        v_display = v
+                    arg_parts.append(f"{k}={v_display!r}")
+                args_str = ", ".join(arg_parts)
+            else:
+                args_str = str(args)[:200]
+
+            prompt = (
+                f"\n{YELLOW}⚠ Permission Request{RESET}\n"
+                f"Tool: {name}\n"
+                f"Arguments: {args_str}\n"
+                f"Allow execution? (y/n): "
+            )
+            try:
+                response = input(prompt).strip().lower()
+                if response not in ("y", "yes", ""):
+                    return "Permission denied by user."
+            except (EOFError, KeyboardInterrupt):
+                return "Permission denied (interrupted)."
+
         try:
             context = ToolContext(memory=self.memory)
             return tool.execute(context, **args)
@@ -1276,7 +1313,10 @@ def main():
     memory = Memory()
     brain_type = os.getenv("NICODE_BRAIN", "azure").lower()
     brain = create_brain(brain_type, memory, tool_definitions(tools))
-    agent = Agent(brain=brain, tools=tools, memory=memory, mode="plan")
+    # Enable/disable permission prompts via NICODE_ASK_PERMISSION (default: true)
+    ask_perm_val = os.getenv("NICODE_ASK_PERMISSION", "true").lower()
+    ask_permission = ask_perm_val in ("1", "true", "yes", "y")
+    agent = Agent(brain=brain, tools=tools, memory=memory, mode="plan", ask_permission=ask_permission)
 
     # Initialize input history
     try:
